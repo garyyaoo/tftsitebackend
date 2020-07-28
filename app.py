@@ -6,8 +6,9 @@ from queue import Queue
 import threading
 import json
 import requests
+from secrets import riot_api_token
 
-riot_token = 'RGAPI-495ebcc0-0ebd-404b-a6cd-bcc411650ae2'
+riot_token = riot_api_token
 headers={ 'X-Riot-Token': riot_token}
 
 stop_requesting = False
