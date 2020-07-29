@@ -2,11 +2,12 @@ from flask import Flask, render_template, url_for, request, redirect
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from queue import Queue
+from typing import List
+from secrets import riot_api_token
 
 import threading
 import json
 import requests
-from secrets import riot_api_token
 
 riot_token = riot_api_token
 headers={ 'X-Riot-Token': riot_token}
@@ -101,7 +102,7 @@ def start():
         global thread, queue
         if queue.qsize() == 0:
             queue.put({'request_type': 'get_players_in_league', 'league': 'challenger'})
-            # queue.put({'request_type': 'get_players_in_league', 'league': 'grandmaster'})
+            queue.put({'request_type': 'get_players_in_league', 'league': 'grandmaster'})
             # queue.put({'request_type': 'get_players_in_league', 'league': 'master'})
         
         req = queue.get()
@@ -157,7 +158,7 @@ def getSummonerInfo(summoner_name: str) -> None:
 def getPlayerMatchHistory(puuid: str) -> None:
     global headers, queue
     base_url = 'https://americas.api.riotgames.com'
-    endpoint = '/tft/match/v1/matches/by-puuid/{puuid}/ids?count={count}'.format(puuid=puuid, count=20)
+    endpoint = '/tft/match/v1/matches/by-puuid/{puuid}/ids?count={count}'.format(puuid=puuid, count=5)
     r = requests.get(base_url+endpoint, headers=headers)
     if r.ok:
         print('get history ok')
@@ -180,9 +181,59 @@ def getMatchData(match_id: str) -> None:
                 db.session.commit()
             except:
                 db.session.rollback()
+        else:
+            queue.add({'request_type': 'get_match_data', 'match_id': match_id})
 
 def hashRegion(region: str, summoner_name: str) -> int:
     return hash(region +summoner_name )
+
+champion_set = {'TFT3_ahri','TFT3_annie','TFT3_ashe','TFT3_aurelionsol','TFT3_bard','TFT3_blitzcrank','TFT3_caitlyn','TFT3_cassiopeia','TFT3_darius','TFT3_ekko','TFT3_ezreal','TFT3_fiora','TFT3_fizz','TFT3_gangplank','TFT3_gnar','TFT3_graves','TFT3_illaoi','TFT3_irelia','TFT3_janna','TFT3_jarvaniv','TFT3_jayce','TFT3_jhin','TFT3_jinx','TFT3_karma','TFT3_kogmaw','TFT3_leona','TFT3_lucian','TFT3_lulu','TFT3_malphite','TFT3_masteryi','TFT3_mordekaiser','TFT3_nautilus','TFT3_neeko','TFT3_nocturne','TFT3_poppy','TFT3_rakan','TFT3_riven','TFT3_rumble','TFT3_shaco','TFT3_shen','TFT3_soraka','TFT3_syndra','TFT3_teemo','TFT3_thresh','TFT3_twistedfate','TFT3_urgot','TFT3_vayne','TFT3_vi','TFT3_viktor','TFT3_wukong','TFT3_xayah','TFT3_xerath','TFT3_xinzhao','TFT3_yasuo','TFT3_zed','TFT3_ziggs','TFT3_zoe'}
+comp_statistics = {}
+all_games = 0
+
+
+
+def getAllSublists(comp, extra):
+    if extra == 0:
+        return [comp]
+    else:
+        sublists = []
+        for i in range(len(comp)):
+            temp = comp[0:i] + comp[i+1:]
+            ret = getAllSublists(temp, extra-1)
+            for returned_sublist in ret:
+                sublists.append(returned_sublist)
+        return sublists
+
+def matchDataStats(match_data: List[MatchData]) -> None:
+    global comp_statistics, all_games
+    for match in match_data:
+        all_games += 1
+        js = json.loads(match.content)
+        participants = js['participants']
+        for participant in participants:
+            comp = []
+            placement = participant['placement']
+            for unit in participant['units']:
+                character_id = unit['character_id']
+                comp.append(character_id)
+            extra = len(comp)-8
+            if extra >= 0:
+                all_sublists = getAllSublists(comp, extra)
+                for sublist in all_sublists:
+                    key = repr(sorted(sublist))
+                    if key not in comp_statistics:
+                        comp_statistics[key] = { 'winrate': 0, 'games': 0, 'avg_placement': 0, 'sum_placements': 0, 'wins': 0, 'top_4_count': 0, 'top_4_rate': 0 }
+                    stats = comp_statistics.get(key)
+                    stats['games'] += 1
+                    stats['wins'] += 1 if placement == 1 else 0
+                    stats['top_4_count'] += 1 if placement < 5 else 0
+                    stats['sum_placements'] += placement
+    for comp in comp_statistics:
+        c = comp_statistics.get(comp)
+        c['winrate'] = c['wins']/c['games']
+        c['avg_placement'] = c['sum_placements']/c['games']
+        c['top_4_rate'] = c['top_4_count']/c['games']
 
 if __name__ == "__main__":
     start()
