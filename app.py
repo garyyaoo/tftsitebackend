@@ -9,7 +9,6 @@ import threading
 import json
 import requests
 
-riot_api_token = 'RGAPI-5dfb7df8-21ee-45d3-ade6-13ece738023b'
 
 riot_token = riot_api_token
 headers={ 'X-Riot-Token': riot_token}
