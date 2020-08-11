@@ -3,7 +3,7 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from queue import Queue
 from typing import List
-# from secrets import riot_api_token
+from secrets import riot_api_token
 
 import threading
 import json
@@ -18,6 +18,7 @@ thread = None
 
 stored_matches ={""}
 trait_set = {'tft3_ahri': ['sorcerer', 'starguardian'],'tft3_annie': ['mechpilot', 'sorcerer'],'tft3_ashe': ['celestial', 'sniper'],'tft3_aurelionsol': ['rebel', 'starship'],'tft3_bard': ['astro', 'mystic'],'tft3_blitzcrank': ['chrono', 'brawler'],'tft3_caitlyn': ['chrono', 'sniper'],'tft3_cassiopeia': ['battlecast','mystic'],'tft3_darius': ['spacepirate', 'manareaver'],'tft3_ekko': ['cybernetic','infiltrator'],'tft3_ezreal': ['chrono','blaster'],'tft3_fiora': ['cybernetic', 'blademaster'],'tft3_fizz': ['infiltrator', 'mechpilot'],'tft3_gangplank': ['demolitionist', 'spacepirate','mercenary'],'tft3_gnar': ['astro','brawler'],'tft3_graves': ['spacepirate','blaster'],'tft3_illaoi': ['battlecast','brawler'],'tft3_irelia': ['cybernetic','manareaver','blademaster'],'tft3_janna': ['starguardian','paragon'],'tft3_jarvaniv': ['protector','darkstar'],'tft3_jayce': ['spacepirate','vanguard'],'tft3_jhin': ['sniper','darkstar'],'tft3_jinx': ['rebel','blaster'],'tft3_karma': ['darkstar','mystic'],'tft3_kogmaw': ['battlecast','blaster'],'tft3_leona': ['vanguard','cybernetic'],'tft3_lucian': ['cybernetic','blaster'],'tft3_lulu': ['celestial','mystic'],'tft3_malphite': ['rebel','brawler'],'tft3_masteryi': ['rebel','blademaster'],'tft3_mordekaiser': ['vanguard','darkstar'],'tft3_nautilus': ['astro','vanguard'],'tft3_neeko': ['starguardian','protector'],'tft3_nocturne': ['infiltrator','battlecast'],'tft3_poppy': ['starguardian','vanguard'],'tft3_rakan': ['celestial','protector'],'tft3_riven': ['chrono','blademaster'],'tft3_rumble': ['demolitionist','mechpilot'],'tft3_shaco': ['darkstar','infiltrator'],'tft3_shen': ['chrono','blademaster'],'tft3_soraka': ['starguardian','mystic'],'tft3_syndra': ['sorcerer','starguardian'],'tft3_teemo': ['sniper','astro'],'tft3_thresh': ['chrono','manareaver'],'tft3_twistedfate': ['chrono','sorcerer'],'tft3_urgot': ['protector','battlecast'],'tft3_vayne': ['sniper','cybernetic'],'tft3_vi': ['brawler','cybernetic'],'tft3_viktor': ['battlecast','sorcerer'],'tft3_wukong': ['chrono','vanguard'],'tft3_xayah': ['blademaster','celestial'],'tft3_xerath': ['darkstar','sorcerer'],'tft3_xinzhao': ['celestial','protector'],'tft3_yasuo': ['rebel','blademaster'],'tft3_zed': ['rebel','infiltrator'],'tft3_ziggs': ['rebel','demolitionist'],'tft3_zoe': ['sorcerer','starguardian']}
+trait_count = {'astro': [3],'celestial': [2,4,6], 'chrono': [2,4,6,8], 'cybernetic': [3,6], 'darkstar': [2,4,6,8], 'sorcerer': [2,4,6], 'spacepirate': [2,4], 'mechpilot': [3], 'rebel': [3,6,9], 'starguardian': [3,6,9], 'infiltrator': [2,4,6],'blaster': [2,4],'brawler': [2,4],'mercenary': [1],'demolitionist': [2],'protector': [2,4,6],'mystic': [2,4],'manareaver': [2],'blademaster': [3,6,9],'sniper': [2,4],'starship': [1],'battlecast': [2,4,6,8],'paragon': [1],'vanguard': [2,4,6]}
 comp_statistics = {}
 trait_statistics = {}
 all_games = 0
@@ -62,11 +63,15 @@ def stop():
     cancel()
     return visualizeQueue()
 
+@app.route('/start', methods=['GET'])
+def start_endpoint():
+    start()
+    return 
+
 @app.route('/queue', methods=['GET'])
 def visualize():
     puuids = Puuid.query.all()
     match_ids = MatchData.query.all()
-
 
     return render_template('visualize.html', queue_str=puuids, match_data_str=match_ids)
 
@@ -75,7 +80,7 @@ def getStats():
     sort = "games" if request.args.get('sort') is None else request.args.get('sort')
     count = request.args.get('count')
     count = 10 if count is None or not count.isnumeric() else int(count)
-    if sort not in ["games", "wins", "placement"]:
+    if sort not in ["games", "winrate", "placement"]:
         sort="games"
 
     global comp_statistics, all_games
@@ -93,7 +98,7 @@ def getSortedStatistics(sort: str, count: int):
     global trait_statistics
     if (sort == "games"):
         return [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['games'], x[1]['winrate']), reverse=True)[0:count]]
-    if (sort == "wins"):
+    if (sort == "winrate"):
         return [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['winrate'], x[1]['games']) if x[1]['games'] > 99 else (-1, -1), reverse=True)[0:count]]
     if (sort == "placement"):
         return [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['avg_placement'], x[1]['games']) if x[1]['games'] > 99 else (10, 10), reverse=False)[0:count]]
@@ -103,7 +108,7 @@ def start():
     if queue.qsize() == 0:
         queue.put({'request_type': 'get_players_in_league', 'league': 'challenger'})
         queue.put({'request_type': 'get_players_in_league', 'league': 'grandmaster'})
-        queue.put({'request_type': 'get_players_in_league', 'league': 'master'})
+        # queue.put({'request_type': 'get_players_in_league', 'league': 'master'})
     
     req = queue.get()
     print(req)
@@ -156,7 +161,7 @@ def getSummonerInfo(summoner_name: str) -> None:
         queue.put({'request_type': 'get_player_match_history', 'puuid': puuid})
 
 def getPlayerMatchHistory(puuid: str) -> None:
-    global headers, queue
+    global headers, queue, stored_matches
     base_url = 'https://americas.api.riotgames.com'
     endpoint = '/tft/match/v1/matches/by-puuid/{puuid}/ids?count={count}'.format(puuid=puuid, count=5)
     r = requests.get(base_url+endpoint, headers=headers)
@@ -164,7 +169,9 @@ def getPlayerMatchHistory(puuid: str) -> None:
         print('get history ok')
         v = json.loads(r.text)
         for match_id in v:
-            queue.put({'request_type': 'get_match_data', 'match_id': match_id })
+            if match_id not in stored_matches:
+                queue.put({'request_type': 'get_match_data', 'match_id': match_id })
+                stored_matches.add(match_id)
 
 def getMatchData(match_id: str) -> None:
     global headers, stored_matches
@@ -286,7 +293,7 @@ def getAllSublists(comp, extra, first):
         return sublists
 
 def compToTraits(comp):
-    global trait_set
+    global trait_set, trait_count
     unit_set = {""}
     traits = {}
     for unit in comp:
@@ -294,6 +301,10 @@ def compToTraits(comp):
             unit_set.add(unit)
             for trait in trait_set[unit]:
                 traits[trait] = traits.get(trait, 0) + 1
+    for key in list(traits):
+        highest = max([x if x<= traits[key] else 0 for x in trait_count[key]])
+        if highest == 0:
+            traits.pop(key)
     sorted_dict = sorted(traits.items(), key=lambda x: (x[1], x[0]), reverse=True)
     return repr([repr(value) + ' ' + key for key, value in sorted_dict])
 
