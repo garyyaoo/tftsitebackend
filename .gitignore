@@ -1,5 +1,5 @@
 env/
 __pycache__
-*.db
 secrets.py
 .idea
+*.db

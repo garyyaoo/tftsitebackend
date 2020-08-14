@@ -3,12 +3,14 @@ from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime
 from queue import Queue
 from typing import List
-from secrets import riot_api_token
+# from secrets import riot_api_token
 
+import itertools
 import threading
 import json
 import requests
 
+riot_api_token = 'RGAPI-a7806328-77f6-405e-abb3-aa66c8d5569b'
 
 riot_token = riot_api_token
 headers={ 'X-Riot-Token': riot_token}
@@ -40,7 +42,7 @@ class Todo(db.Model):
     content = db.Column(db.String(32), nullable=False)
     date_created = db.Column(db.DateTime, default=datetime.utcnow)
 
-class MatchData(db.Model):
+class MatchData(db.Model):  
     id = db.Column(db.Integer, primary_key=True)
     match_id = db.Column(db.String(64), nullable=False)
     content = db.Column(db.String(32768), nullable=False)
@@ -83,25 +85,27 @@ def getStats():
     if sort not in ["games", "winrate", "placement"]:
         sort="games"
 
-    global comp_statistics, all_games
+    global all_games
     response = Response(
         response= json.dumps({'games': all_games, 'comps': getSortedStatistics(sort, count)}),
         status=200
     )
     response.headers['Access-Control-Allow-Origin'] = '*'
     response.headers['content-type'] = 'application/json'
-    print('count {}'.format(count))
-    print('sort {}'.format(sort))
     return response
 
 def getSortedStatistics(sort: str, count: int):
     global trait_statistics
+    sorted_ret = None
     if (sort == "games"):
-        return [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['games'], x[1]['winrate']), reverse=True)[0:count]]
+        sorted_ret = [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['games'], x[1]['winrate']), reverse=True)[0:count]]
     if (sort == "winrate"):
-        return [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['winrate'], x[1]['games']) if x[1]['games'] > 99 else (-1, -1), reverse=True)[0:count]]
+        sorted_ret = [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['winrate'], x[1]['games']) if x[1]['games'] > 299 else (-1, -1), reverse=True)[0:count]]
     if (sort == "placement"):
-        return [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['avg_placement'], x[1]['games']) if x[1]['games'] > 99 else (10, 10), reverse=False)[0:count]]
+        sorted_ret = [{'traits':key, 'stats':value} for key, value in sorted(trait_statistics.items(), key=lambda x: (x[1]['avg_placement'], x[1]['games']) if x[1]['games'] > 299 else (10, 10), reverse=False)[0:count]]
+    for comp in sorted_ret:
+        comp['stats']['variations'] = dict(itertools.islice({ key: value for key, value in sorted(comp['stats']['variations'].items(), key=lambda x: x[1]['games'], reverse=True)}.items(), 3))
+    return sorted_ret
 
 def start():
     global thread, queue
@@ -122,7 +126,7 @@ def start():
     elif request_type == 'get_match_data':
         getMatchData(req['match_id'])
     
-    thread = threading.Timer(1.21, start)
+    thread = threading.Timer(2.5, start)
     thread.start()
 
 def visualizeQueue():
@@ -142,7 +146,11 @@ def getPlayersInLeague(league: str) -> None:
         v = json.loads(r.text)
         entries = v['entries']
         for e in entries:
-            queue.put({'request_type': 'get_summoner_info', 'summoner_name': e['summonerName']})
+            if Puuid.query.filter_by(id=hashRegion('NA', e['summonerName'])).scalar() is None:
+                queue.put({'request_type': 'get_summoner_info', 'summoner_name': e['summonerName']})
+            else:
+                puuid = Puuid.query.filter_by(id=hashRegion('NA', e['summonerName'])).first().puuid
+                queue.put({'request_type': 'get_player_match_history', 'puuid': puuid})
 
 def getSummonerInfo(summoner_name: str) -> None:
     global headers, queue
@@ -152,10 +160,18 @@ def getSummonerInfo(summoner_name: str) -> None:
         r = requests.get(base_url + endpoint, headers=headers)
         if r.ok:
             v = json.loads(r.text)
-            puuid = Puuid(id=hashRegion('NA', summoner_name) ,puuid=v['puuid'], username=v['name'])
+            puuid = Puuid(id=hashRegion('NA', summoner_name), puuid=v['puuid'], username=summoner_name)
+            print('hashRegion {}'.format(hashRegion('NA', summoner_name)))
             db.session.add(puuid)
             db.session.commit()
             queue.put({'request_type': 'get_player_match_history', 'puuid': v['puuid']})
+            print('from db {}'.format(Puuid.query.filter_by(username=summoner_name).first().id))
+            if Puuid.query.filter_by(username=summoner_name).first().id != hashRegion('NA', summoner_name):
+                Puuid.query.filter_by(username=summoner_name).delete()
+                db.session.commit()
+                new_puuid = Puuid(id=hashRegion('NA', summoner_name), puuid=v['puuid'], username=summoner_name)
+                db.session.add(new_puuid)
+                db.session.commit()
     else:
         puuid = Puuid.query.filter_by(id=hashRegion('NA', summoner_name)).first().puuid
         queue.put({'request_type': 'get_player_match_history', 'puuid': puuid})
@@ -169,38 +185,36 @@ def getPlayerMatchHistory(puuid: str) -> None:
         print('get history ok')
         v = json.loads(r.text)
         for match_id in v:
-            if match_id not in stored_matches:
+            if match_id not in stored_matches and MatchData.query.filter_by(id=hash(match_id)).scalar() is None:
                 queue.put({'request_type': 'get_match_data', 'match_id': match_id })
                 stored_matches.add(match_id)
 
 def getMatchData(match_id: str) -> None:
     global headers, stored_matches
-    if match_id not in stored_matches and MatchData.query.filter_by(id=hash(match_id)).first() is None:
-        base_url = 'https://americas.api.riotgames.com'
-        endpoint = '/tft/match/v1/matches/{match_id}'.format(match_id=match_id)
-        r = requests.get(base_url + endpoint, headers=headers)
-        if r.ok:
-            print('matchData OK')
-            v = json.loads(r.text)
-            match_data = MatchData(id=hash(match_id), match_id=match_id, content=json.dumps(v['info']))
-            # temp_match_data = TempMatchData(id=hash(match_id), match_id=match_id, content=json.dumps(v['info']))
-            stored_matches.add(match_id)
-            matchDataStats([match_data])
-            try:
-                db.session.add(match_data)
-                db.session.add(temp_match_data)
-                db.session.commit()
-            except:
-                db.session.rollback()
-        else:
-            queue.add({'request_type': 'get_match_data', 'match_id': match_id})
+    base_url = 'https://americas.api.riotgames.com'
+    endpoint = '/tft/match/v1/matches/{match_id}'.format(match_id=match_id)
+    r = requests.get(base_url + endpoint, headers=headers)
+    if r.ok:
+        print('matchData OK')
+        v = json.loads(r.text)
+        match_data = MatchData(id=hash(match_id), match_id=match_id, content=json.dumps(v['info']))
+        # temp_match_data = TempMatchData(id=hash(match_id), match_id=match_id, content=json.dumps(v['info']))
+        stored_matches.add(match_id)
+        matchDataStats([match_data])
+        try:
+            db.session.add(match_data)
+            # db.session.add(temp_match_data)
+            db.session.commit()
+        except:
+            db.session.rollback()
+    else:
+        queue.add({'request_type': 'get_match_data', 'match_id': match_id})
 
 def hashRegion(region: str, summoner_name: str) -> int:
-    return hash(region +summoner_name )
+    return hash(region+summoner_name)
 
 def matchDataStats(match_data: List[MatchData]) -> None:
-    global comp_statistics, all_games, trait_statistics
-    temp_comp_statistics = {}
+    global all_games, trait_statistics
     for match in match_data:
         all_games += 1
         js = json.loads(match.content)
@@ -213,72 +227,34 @@ def matchDataStats(match_data: List[MatchData]) -> None:
                 comp.append(character_id.lower())
             extra = len(comp)-8
             if extra >= 0:
-                temp_trait_stats = {}
                 all_sublists = getAllSublists(comp, extra, 0)
                 for sublist in all_sublists:
-                    trait_key = compToTraits(sublist)
-                    key = repr(sorted(sublist))
+                    [ trait_id_key, traits ] = compToTraits(sublist)
+                    comp_key = repr(sorted(sublist))
 
-                    if trait_key not in temp_trait_stats:
-                        temp_trait_stats[trait_key] = { 'winrate': 0, 'games': 0, 'avg_placement': 0, 'sum_placements': 0, 'wins': 0, 'top_4_count': 0, 'top_4_rate': 0, 'variations': {}}
-                        trait = temp_trait_stats[trait_key]
-                        trait['games'] += 1
-                        trait['wins'] += 1 if placement == 1 else 0
-                        trait['top_4_count'] += 1 if placement < 5 else 0
-                        trait['sum_placements'] += placement
+                    if trait_id_key not in trait_statistics:
+                        trait_statistics[trait_id_key] = { 'winrate': 0, 'games': 0, 'avg_placement': 0, 'sum_placements': 0, 'wins': 0, 'top_4_count': 0, 'top_4_rate': 0, 'variations': {}}
+                    trait = trait_statistics[trait_id_key]
+                    trait['games'] += 1
+                    trait['wins'] += 1 if placement == 1 else 0
+                    trait['top_4_count'] += 1 if placement < 5 else 0
+                    trait['sum_placements'] += placement
+
+                    trait['winrate'] = trait['wins']/trait['games']
+                    trait['avg_placement'] = trait['sum_placements']/trait['games']
+                    trait['top_4_rate'] = trait['top_4_count']/trait['games']
                     
-                    if key not in temp_comp_statistics:
-                        temp_comp_statistics[key] = { 'winrate': 0, 'games': 0, 'avg_placement': 0, 'sum_placements': 0, 'wins': 0, 'top_4_count': 0, 'top_4_rate': 0 }
-                    stats = temp_comp_statistics.get(key)
-                    stats['games'] += 1
-                    stats['wins'] += 1 if placement == 1 else 0
-                    stats['top_4_count'] += 1 if placement < 5 else 0
-                    stats['sum_placements'] += placement
+                    if comp_key not in trait['variations']:
+                        trait['variations'][comp_key] = { 'winrate': 0, 'games': 0, 'avg_placement': 0, 'sum_placements': 0, 'wins': 0, 'top_4_count': 0, 'top_4_rate': 0, 'traits': traits }
+                    comp_stats = trait['variations'][comp_key]
+                    comp_stats['games'] += 1
+                    comp_stats['wins'] += 1 if placement == 1 else 0
+                    comp_stats['top_4_count'] += 1 if placement < 5 else 0
+                    comp_stats['sum_placements'] += placement
 
-                    stats['winrate'] = stats['wins']/stats['games']
-                    stats['avg_placement'] = stats['sum_placements']/stats['games']
-                    stats['top_4_rate'] = stats['top_4_count']/stats['games']
-
-                    if key not in temp_trait_stats[trait_key]['variations']:
-                        temp_trait_stats[trait_key]['variations'][key] = stats
-
-                for trait in temp_trait_stats:
-                    if trait not in trait_statistics:
-                        trait_statistics[trait] = temp_trait_stats[trait]
-                    else:
-                        traits = trait_statistics[trait]
-                        temp_traits = temp_trait_stats[trait]
-                        traits['games'] += temp_traits['games']
-                        traits['wins'] += temp_traits['wins']
-                        traits['top_4_count'] += temp_traits['top_4_count']
-                        traits['sum_placements'] += temp_traits['sum_placements']
-                        for variation in temp_traits['variations']:
-                            if variation not in traits['variations']:
-                                traits['variations'][variation] = temp_traits['variations'][variation]
-                            else:
-                                temp_variation = traits['variations'][variation]
-                                temp_variation['games'] += temp_traits['games']
-                                temp_variation['wins'] += temp_traits['wins']
-                                temp_variation['top_4_count'] += temp_traits['top_4_count']
-                                temp_variation['sum_placements'] += temp_traits['sum_placements']        
-                    trait_statistics[trait]['winrate'] = trait_statistics[trait]['wins']/trait_statistics[trait]['games']
-                    trait_statistics[trait]['avg_placement'] = trait_statistics[trait]['sum_placements']/trait_statistics[trait]['games']
-                    trait_statistics[trait]['top_4_rate'] = trait_statistics[trait]['top_4_count']/trait_statistics[trait]['games']
-
-    for key in temp_comp_statistics:
-        if key not in comp_statistics:
-            comp_statistics[key] = { 'winrate': 0, 'games': 0, 'avg_placement': 0, 'sum_placements': 0, 'wins': 0, 'top_4_count': 0, 'top_4_rate': 0 }
-        temp = temp_comp_statistics.get(key)
-        comp = comp_statistics.get(key)
-
-        comp['games'] += temp['games']
-        comp['wins'] += temp['wins']
-        comp['top_4_count'] += temp['top_4_count']
-        comp['sum_placements'] += temp['sum_placements']
-
-        comp['winrate'] = comp['wins']/comp['games']
-        comp['avg_placement'] = comp['sum_placements']/comp['games']
-        comp['top_4_rate'] = comp['top_4_count']/comp['games']
+                    comp_stats['winrate'] = comp_stats['wins']/comp_stats['games']
+                    comp_stats['avg_placement'] = comp_stats['sum_placements']/comp_stats['games']
+                    comp_stats['top_4_rate'] = comp_stats['top_4_count']/comp_stats['games']
 
 def getAllSublists(comp, extra, first):
     if extra == 0 or first == len(comp)-1:
@@ -302,11 +278,13 @@ def compToTraits(comp):
             for trait in trait_set[unit]:
                 traits[trait] = traits.get(trait, 0) + 1
     for key in list(traits):
-        highest = max([x if x<= traits[key] else 0 for x in trait_count[key]])
+        highest = max([x if x <= traits[key] else 0 for x in trait_count[key]])
         if highest == 0:
             traits.pop(key)
+        else:
+            traits[key] = highest
     sorted_dict = sorted(traits.items(), key=lambda x: (x[1], x[0]), reverse=True)
-    return repr([repr(value) + ' ' + key for key, value in sorted_dict])
+    return [repr([repr(value) + ' ' + key for key, value in sorted_dict[0:2]]), dict(sorted_dict)]
 
 
 if __name__ == "__main__":
